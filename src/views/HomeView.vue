@@ -1168,33 +1168,6 @@ function triggerToast(msg) {
               </v-chip>
             </div>
           </div>
-
-          <!-- Supabase Live Status & Refresh Bar -->
-          <div class="d-flex align-center justify-space-between flex-wrap ga-2 mt-3 pt-3 border-t-stone">
-            <div class="d-flex align-center ga-2 flex-wrap">
-              <v-chip
-                size="small"
-                :color="dbSyncSource === 'supabase' ? '#10B981' : '#64748B'"
-                variant="tonal"
-                class="font-weight-bold"
-                :prepend-icon="dbSyncSource === 'supabase' ? 'mdi-database-check' : 'mdi-database-outline'"
-              >
-                {{ dbSyncSource === 'supabase' ? `Supabase Live (${dbArticleCount} บทความ)` : 'โหมด Local Fallback' }}
-              </v-chip>
-              <v-btn
-                size="small"
-                variant="tonal"
-                color="#0284C7"
-                rounded="lg"
-                class="text-none font-weight-bold"
-                prepend-icon="mdi-refresh"
-                :loading="isSyncingDb"
-                @click="syncArticlesFromDb(currentLang, true)"
-              >
-                ดึงข้อมูลจาก Database
-              </v-btn>
-            </div>
-          </div>
         </v-card>
 
         <!-- Articles Content -->
