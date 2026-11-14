@@ -1,4 +1,3 @@
-@'
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -10,6 +9,7 @@ const router = useRouter()
 // --- Config Supabase REST API ผ่าน Axios ---
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://pxlqylmlktavvptxonym.supabase.co'
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_VAEStEmaDCPyhwd6cAhYFQ_xV-7rgvK'
+const FASTIFY_URL = 'http://localhost:3000/api/articles'
 
 const dbAxios = axios.create({
   baseURL: `${SUPABASE_URL}/rest/v1`,
@@ -28,6 +28,32 @@ const loading = ref(false)
 const searchQuery = ref('')
 const selectedCategory = ref('all')
 const dbStatus = ref({ connected: false, count: 0, source: 'loading' })
+
+// Diagnostic Console Log State (แสดงทั้งใน F12 Console และบนหน้าจอ)
+const diagnosticLogs = ref([])
+const showLogPanel = ref(true)
+
+function addDiagLog(level, action, message, detail = null) {
+  const timestamp = new Date().toLocaleTimeString('th-TH', { hour12: false })
+  const entry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    timestamp,
+    level, // 'success' | 'error' | 'warn' | 'info'
+    action,
+    message,
+    detail: detail ? (typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2)) : null
+  }
+  diagnosticLogs.value.unshift(entry)
+
+  const prefix = `[CRUD-${action}] (${timestamp})`
+  if (level === 'error') {
+    console.error(`❌ ${prefix} ${message}`, detail || '')
+  } else if (level === 'warn') {
+    console.warn(`⚠️ ${prefix} ${message}`, detail || '')
+  } else {
+    console.log(`✅ ${prefix} ${message}`, detail || '')
+  }
+}
 
 // Pagination State
 const currentPage = ref(1)
@@ -84,12 +110,20 @@ async function fetchAllDatabaseArticles() {
         updatedAt: item.created_at || new Date().toISOString()
       }))
       dbStatus.value = { connected: true, count: res.data.length, source: 'Supabase REST (Axios)' }
+      addDiagLog('success', 'SELECT', `ดึงข้อมูลจาก Supabase สำเร็จ จำนวน ${res.data.length} บทความ`)
       showToast(`ดึงข้อมูลสดจาก Supabase สำเร็จ (${res.data.length} บทความ) ✨`)
       loading.value = false
       return
+    } else {
+      addDiagLog('warn', 'SELECT', 'Supabase ตอบกลับ 200 OK แต่ไม่มีข้อมูลในตาราง articles (0 แถว) — อาจติด RLS Policy FOR SELECT หรือตารางว่างเปล่า')
     }
   } catch (err) {
-    console.warn('Supabase fetch notice, using fallback dataset:', err.message)
+    const reason = err.response?.data?.message || err.response?.data || err.message
+    addDiagLog('error', 'SELECT', `ดึงข้อมูลจาก Supabase ไม่สำเร็จเพราะ: ${ err.message }`, {
+      status: err.response?.status,
+      reason,
+      url: `${SUPABASE_URL}/rest/v1/articles`
+    })
   }
 
   // Fallback 48 บทความสมบูรณ์
@@ -105,7 +139,7 @@ async function fetchAllDatabaseArticles() {
       readTime: item.readTime || '4 นาที',
       updatedAt: new Date().toISOString()
     }))
-    dbStatus.value = { connected: true, count: articles.value.length, source: 'iKamm Database Core' }
+    dbStatus.value = { connected: true, count: articles.value.length, source: 'iKamm Database Core (Fallback)' }
   }
   loading.value = false
 }
@@ -155,22 +189,22 @@ function openEditDialog(article) {
 
 async function handleSaveArticle() {
   if (!formData.value.title.trim()) {
+    addDiagLog('error', isEditing.value ? 'UPDATE' : 'INSERT', 'บันทึกไม่สำเร็จเพราะ: ไม่ได้กรอกหัวข้อบทความ (title ว่างเปล่า)')
     showToast('กรุณาระบุหัวข้อบทความ', 'error')
     return
   }
 
   formSubmitting.value = true
-  const newId = isEditing.value ? formData.value.id : `art-${Date.now()}`
+  const targetId = isEditing.value ? String(formData.value.id) : `art-${Date.now()}`
 
-  // โครงสร้าง Payload ที่ถูกต้องตาม Schema
   const supabasePayload = {
-    id: newId,
-    title: formData.value.title,
+    id: targetId,
+    title: formData.value.title.trim(),
     category_id: 'bedroom-living',
     category_name: formData.value.category || 'คอนโด & ประหยัดพื้นที่',
     summary: formData.value.summary || '',
     sections: [
-      { heading: formData.value.title, body: formData.value.summary || '' }
+      { heading: formData.value.title.trim(), body: formData.value.summary || '' }
     ],
     recommendations: [],
     image: formData.value.image || 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80',
@@ -182,43 +216,127 @@ async function handleSaveArticle() {
   try {
     if (isEditing.value) {
       // ✏️ UPDATE (PATCH)
-      try {
-        await dbAxios.patch(`/articles?id=eq.${newId}`, {
-          title: formData.value.title,
-          summary: formData.value.summary,
-          category_name: formData.value.category
-        })
-      } catch (e) {
-        await axios.patch(`http://localhost:3000/api/articles/${newId}`, formData.value).catch(() => {})
+      const updatePatch = {
+        title: formData.value.title.trim(),
+        summary: formData.value.summary || '',
+        category_name: formData.value.category || 'คอนโด & ประหยัดพื้นที่',
+        image: formData.value.image || supabasePayload.image,
+        sections: [{ heading: formData.value.title.trim(), body: formData.value.summary || '' }]
       }
 
-      const idx = articles.value.findIndex(a => a.id === newId)
-      if (idx !== -1) articles.value[idx] = { ...articles.value[idx], ...formData.value }
-      showToast('อัปเดตบทความสำเร็จ! ✨', 'success')
+      let supabaseUpdated = false
+      try {
+        const res = await dbAxios.patch(`/articles?id=eq.${encodeURIComponent(targetId)}`, updatePatch)
+        if (Array.isArray(res.data) && res.data.length > 0) {
+          supabaseUpdated = true
+          addDiagLog('success', 'UPDATE (Supabase)', `อัปเดตบทความ ID="${targetId}" บน Supabase สำเร็จ (${res.data.length} แถว)`, res.data[0])
+        } else {
+          addDiagLog(
+            'error',
+            'UPDATE (Supabase)',
+            `Update บน Supabase ไม่สำเร็จ (Status ${res.status} แต่อัปเดตจริงได้ 0 แถว!) สาเหตุที่เป็นไปได้: ` +
+            `1) ไม่พบ ID="${targetId}" ในตาราง public.articles บน Supabase (เป็นบทความจาก Local Fallback) หรือ ` +
+            `2) ติดสิทธิ์ Row Level Security (RLS) ยังไม่ได้เปิด Policy FOR UPDATE บนตาราง public.articles`,
+            {
+              targetId,
+              responseStatus: res.status,
+              rowsAffected: 0,
+              sqlFix: `CREATE POLICY "Allow Public Update Articles" ON public.articles FOR UPDATE USING (true) WITH CHECK (true);`
+            }
+          )
+        }
+      } catch (errSupabase) {
+        addDiagLog(
+          'error',
+          'UPDATE (Supabase)',
+          `Update บน Supabase ล้มเหลวเพราะ: ${errSupabase.response?.data?.message || errSupabase.message}`,
+          {
+            status: errSupabase.response?.status,
+            errorData: errSupabase.response?.data,
+            targetId
+          }
+        )
+      }
+
+      // ทดสอบ/ซิงค์ต่อไปที่ Fastify Server (localhost:3000)
+      try {
+        const resFastify = await axios.patch(`${FASTIFY_URL}/${encodeURIComponent(targetId)}`, formData.value)
+        addDiagLog('success', 'UPDATE (Fastify)', `อัปเดตบทความ ID="${targetId}" บน Fastify สำเร็จ`, resFastify.data)
+      } catch (errFastify) {
+        const fastifyReason = errFastify.response?.data?.reason || errFastify.response?.data?.message || errFastify.message
+        addDiagLog(
+          'warn',
+          'UPDATE (Fastify)',
+          `Update บน Fastify (localhost:3000) ไม่สำเร็จเพราะ: ${fastifyReason}`,
+          {
+            status: errFastify.response?.status || 'NO_RESPONSE (Server อาจไม่ได้เปิด หรือ ID ไม่อยู่ใน Fastify Memory)',
+            detail: errFastify.response?.data || errFastify.message
+          }
+        )
+      }
+
+      const idx = articles.value.findIndex(a => String(a.id) === targetId)
+      if (idx !== -1) {
+        articles.value[idx] = { ...articles.value[idx], ...formData.value }
+      }
+      showToast(supabaseUpdated ? 'อัปเดตบทความลง Supabase สำเร็จ! ✨' : 'อัปเดตในหน้าเว็บแล้ว (ดูสาเหตุใน Console Log)', supabaseUpdated ? 'success' : 'warning')
     } else {
       // 🚀 INSERT (POST)
+      let supabaseInserted = false
       try {
-        await dbAxios.post('/articles', supabasePayload)
-        showToast('🎉 บันทึกลง Supabase Database สำเร็จ! (201 Created)', 'success')
-      } catch (errSupabase) {
-        console.warn('Supabase Notice:', errSupabase.response?.data?.message || errSupabase.message)
-        // Fallback ไปยัง Fastify API พอร์ต 3000
-        try {
-          await axios.post('http://localhost:3000/api/articles', {
-            id: newId,
-            title: formData.value.title,
-            content: formData.value.summary,
-            status: formData.value.status || 'published'
-          })
-          showToast('บันทึกลง Fastify Server สำเร็จ! 🚀', 'success')
-        } catch (errFastify) {
-          showToast('บันทึกบทความลงในระบบเรียบร้อย ✨', 'success')
+        const res = await dbAxios.post('/articles', supabasePayload)
+        if (res.status === 201 || (Array.isArray(res.data) && res.data.length > 0)) {
+          supabaseInserted = true
+          addDiagLog('success', 'INSERT (Supabase)', `Insert บทความ ID="${targetId}" ลง Supabase สำเร็จ (201 Created)`, res.data?.[0] || supabasePayload)
+          showToast('🎉 บันทึกลง Supabase Database สำเร็จ! (201 Created)', 'success')
+        } else {
+          addDiagLog('error', 'INSERT (Supabase)', `Insert ตอบกลับ Status ${res.status} แต่ไม่มีแถวที่ถูกสร้าง`, res.data)
         }
+      } catch (errSupabase) {
+        addDiagLog(
+          'error',
+          'INSERT (Supabase)',
+          `Insert ลง Supabase ไม่สำเร็จเพราะ: ${errSupabase.response?.data?.message || errSupabase.message}`,
+          {
+            status: errSupabase.response?.status,
+            code: errSupabase.response?.data?.code,
+            details: errSupabase.response?.data?.details,
+            hint: errSupabase.response?.data?.hint || 'ตรวจสอบ RLS Policy FOR INSERT บนตาราง public.articles',
+            sqlFix: `CREATE POLICY "Allow Public Insert Articles" ON public.articles FOR INSERT WITH CHECK (true);`
+          }
+        )
+      }
+
+      // บันทึกสำรองเข้า Fastify Server (localhost:3000)
+      try {
+        const resFastify = await axios.post(FASTIFY_URL, {
+          id: targetId,
+          title: formData.value.title.trim(),
+          category: formData.value.category,
+          content: formData.value.summary,
+          summary: formData.value.summary,
+          image: supabasePayload.image,
+          status: formData.value.status || 'published'
+        })
+        addDiagLog('success', 'INSERT (Fastify)', `Insert บทความ ID="${targetId}" ลง Fastify Server สำเร็จ`, resFastify.data)
+        if (!supabaseInserted) {
+          showToast('บันทึกลง Fastify Server สำเร็จ! 🚀', 'success')
+        }
+      } catch (errFastify) {
+        addDiagLog(
+          'warn',
+          'INSERT (Fastify)',
+          `Insert ลง Fastify (localhost:3000) ไม่สำเร็จเพราะ: ${errFastify.response?.data?.message || errFastify.message}`,
+          {
+            status: errFastify.response?.status || 'CONNECTION_REFUSED (ตรวจสอบว่ารัน node server/server.js หรือยัง)',
+            detail: errFastify.message
+          }
+        )
       }
 
       articles.value.unshift({
-        id: newId,
-        title: formData.value.title,
+        id: targetId,
+        title: formData.value.title.trim(),
         category: formData.value.category,
         summary: formData.value.summary,
         image: supabasePayload.image,
@@ -228,58 +346,14 @@ async function handleSaveArticle() {
     }
     dialogOpen.value = false
   } catch (err) {
+    addDiagLog('error', 'SAVE_EXCEPTION', `เกิดข้อผิดพลาดที่ไม่คาดคิด: ${err.message}`, err.stack)
     showToast(`เกิดข้อผิดพลาด: ${err.message}`, 'error')
   } finally {
     formSubmitting.value = false
   }
 }
 
-// 🧪 ฟังก์ชันทดสอบ Insert ด่วน 1 คลิก
-async function runTestInsert() {
-  loading.value = true
-  const testId = `test-${Date.now()}`
-  const testPayload = {
-    id: testId,
-    title: `✨ บทความทดสอบ Insert Database (${new Date().toLocaleTimeString('th-TH')})`,
-    category_id: 'bedroom-living',
-    category_name: 'คอนโด & ประหยัดพื้นที่',
-    summary: 'ทดสอบการส่งข้อมูลผ่าน Axios ตรงเข้าตาราง articles บนฐานข้อมูล Supabase สำเร็จสมบูรณ์',
-    sections: [{ heading: 'ผลการทดสอบ', body: 'บันทึกสำเร็จ' }],
-    recommendations: [],
-    image: 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80',
-    read_time: '2 นาที',
-    hashtags: ['#TestInsert', '#Database', '#iKamm']
-  }
-
-  try {
-    try {
-      await dbAxios.post('/articles', testPayload)
-      showToast(`✅ เทส Insert Supabase สำเร็จ! ID: ${testId}`, 'success')
-    } catch (e) {
-      await axios.post('http://localhost:3000/api/articles', {
-        id: testId,
-        title: testPayload.title,
-        content: testPayload.summary,
-        status: 'published'
-      }).catch(() => {})
-      showToast(`✅ เทส Insert สำเร็จเรียบร้อย! ID: ${testId}`, 'success')
-    }
-
-    articles.value.unshift({
-      id: testId,
-      title: testPayload.title,
-      category: testPayload.category_name,
-      summary: testPayload.summary,
-      image: testPayload.image,
-      status: 'published',
-      updatedAt: new Date().toISOString()
-    })
-  } finally {
-    loading.value = false
-  }
-}
-
-// --- 4. DELETE (ลบบทความ) ---
+// --- 4. DELETE (ลบบทความ พร้อมตรวจสอบจำนวนแถวที่ถูกลบจริง) ---
 function confirmDelete(article) {
   articleToDelete.value = article
   deleteDialogOpen.value = true
@@ -287,20 +361,196 @@ function confirmDelete(article) {
 
 async function handleDeleteArticle() {
   if (!articleToDelete.value) return
+  const targetId = String(articleToDelete.value.id)
+  let supabaseDeleted = false
+
   try {
     try {
-      await dbAxios.delete(`/articles?id=eq.${articleToDelete.value.id}`)
-    } catch (e) {
-      await axios.delete(`http://localhost:3000/api/articles/${articleToDelete.value.id}`).catch(() => {})
+      const res = await dbAxios.delete(`/articles?id=eq.${encodeURIComponent(targetId)}`)
+      if (Array.isArray(res.data) && res.data.length > 0) {
+        supabaseDeleted = true
+        addDiagLog('success', 'DELETE (Supabase)', `ลบบทความ ID="${targetId}" ออกจาก Supabase สำเร็จ (${res.data.length} แถว)`, res.data[0])
+      } else {
+        addDiagLog(
+          'error',
+          'DELETE (Supabase)',
+          `Delete บน Supabase ไม่สำเร็จ! (HTTP ${res.status} แต่ลบจริงได้ 0 แถว — รีเฟรชแล้วข้อมูลจะกลับมา) ` +
+          `สาเหตุหลัก: ตาราง public.articles บน Supabase เปิดใช้งาน Row Level Security (RLS) อยู่ แต่ยังไม่มี Policy สำหรับ FOR DELETE!`,
+          {
+            targetId,
+            httpStatus: res.status,
+            deletedRows: res.data,
+            whyItFailed: 'Supabase PostgREST จะคืนค่า 200 OK พร้อม Array ว่าง [] เมื่อติด RLS Policy FOR DELETE ทำให้ลบไม่ได้จริง',
+            sqlFixToRunInSupabase: `DROP POLICY IF EXISTS "Allow Public Delete Articles" ON public.articles;\nCREATE POLICY "Allow Public Delete Articles" ON public.articles FOR DELETE USING (true);`
+          }
+        )
+      }
+    } catch (errSupabase) {
+      addDiagLog(
+        'error',
+        'DELETE (Supabase)',
+        `Delete บน Supabase ล้มเหลวเพราะ: ${errSupabase.response?.data?.message || errSupabase.message}`,
+        {
+          targetId,
+          status: errSupabase.response?.status,
+          errorData: errSupabase.response?.data
+        }
+      )
     }
 
-    articles.value = articles.value.filter((a) => a.id !== articleToDelete.value.id)
-    showToast('ลบบทความเรียบร้อย 🗑️', 'success')
+    // ลบใน Fastify Server ด้วย
+    try {
+      const resFastify = await axios.delete(`${FASTIFY_URL}/${encodeURIComponent(targetId)}`)
+      addDiagLog('success', 'DELETE (Fastify)', `ลบบทความ ID="${targetId}" ออกจาก Fastify Server สำเร็จ`, resFastify.data)
+    } catch (errFastify) {
+      const fastifyReason = errFastify.response?.data?.reason || errFastify.response?.data?.message || errFastify.message
+      addDiagLog(
+        'warn',
+        'DELETE (Fastify)',
+        `Delete บน Fastify (localhost:3000) ไม่สำเร็จเพราะ: ${fastifyReason}`,
+        {
+          targetId,
+          status: errFastify.response?.status || 'NO_RESPONSE'
+        }
+      )
+    }
+
+    articles.value = articles.value.filter((a) => String(a.id) !== targetId)
+    if (supabaseDeleted) {
+      showToast('ลบบทความออกจาก Supabase เรียบร้อย 🗑️', 'success')
+    } else {
+      showToast('⚠️ ลบจากหน้าจอแล้ว แต่ Supabase บล็อกการลบ (ดูสาเหตุใน Console Log)', 'warning')
+    }
   } catch (err) {
+    addDiagLog('error', 'DELETE_EXCEPTION', `ลบไม่สำเร็จเพราะ: ${err.message}`, err.stack)
     showToast(`ลบไม่สำเร็จ: ${err.message}`, 'error')
   } finally {
     deleteDialogOpen.value = false
     articleToDelete.value = null
+  }
+}
+
+// 🧪 ฟังก์ชันทดสอบครบวงจร: INSERT ➔ UPDATE ➔ DELETE พร้อมเขียน Console Log วินิจฉัยละเอียด
+async function runFullCrudTest() {
+  loading.value = true
+  showLogPanel.value = true
+  const testId = `test-${Date.now()}`
+  console.group(`🧪 [CRUD DIAGNOSTIC TEST] เริ่มทดสอบ INSERT -> UPDATE -> DELETE (ID: ${testId})`)
+  addDiagLog('info', 'TEST_START', `เริ่มทดสอบครบวงจร INSERT ➔ UPDATE ➔ DELETE ด้วย ID="${testId}"`)
+
+  const testPayload = {
+    id: testId,
+    title: `✨ บทความทดสอบ CRUD (${new Date().toLocaleTimeString('th-TH')})`,
+    category_id: 'bedroom-living',
+    category_name: 'คอนโด & ประหยัดพื้นที่',
+    summary: 'ข้อความเริ่มต้นสำหรับการทดสอบ Insert เข้าฐานข้อมูล',
+    sections: [{ heading: 'ผลการทดสอบ', body: 'บันทึกสำเร็จ' }],
+    recommendations: [],
+    image: 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80',
+    read_time: '2 นาที',
+    hashtags: ['#TestCRUD', '#Database', '#iKamm'],
+    is_fb_highlight: false
+  }
+
+  try {
+    // =====================================================
+    // STEP 1: TEST INSERT
+    // =====================================================
+    try {
+      const resInsert = await dbAxios.post('/articles', testPayload)
+      if (Array.isArray(resInsert.data) && resInsert.data.length > 0) {
+        addDiagLog('success', '1. TEST INSERT (Supabase)', `✅ INSERT สำเร็จ! สร้างแถวใหม่ ID="${testId}" บน Supabase เรียบร้อย`, resInsert.data[0])
+      } else {
+        addDiagLog('error', '1. TEST INSERT (Supabase)', `❌ INSERT ไม่สำเร็จ: Status ${resInsert.status} แต่ไม่มีข้อมูลถูกสร้าง (ติด RLS FOR INSERT)`, resInsert.data)
+      }
+    } catch (err) {
+      addDiagLog('error', '1. TEST INSERT (Supabase)', `❌ INSERT ล้มเหลวเพราะ: ${err.response?.data?.message || err.message}`, err.response?.data || err.message)
+    }
+
+    try {
+      const resFastifyIns = await axios.post(FASTIFY_URL, {
+        id: testId,
+        title: testPayload.title,
+        content: testPayload.summary,
+        status: 'published'
+      })
+      addDiagLog('success', '1. TEST INSERT (Fastify)', `✅ INSERT ลง Fastify (localhost:3000) สำเร็จ! ID="${resFastifyIns.data?.data?.id}"`, resFastifyIns.data)
+    } catch (err) {
+      addDiagLog('warn', '1. TEST INSERT (Fastify)', `⚠️ INSERT ลง Fastify ไม่สำเร็จเพราะ: ${err.response?.data?.message || err.message}`)
+    }
+
+    // =====================================================
+    // STEP 2: TEST UPDATE
+    // =====================================================
+    const updatedTitle = `${testPayload.title} [UPDATED ✅]`
+    const updatedSummary = 'อัปเดตข้อความสำเร็จผ่านคำสั่ง PATCH'
+    try {
+      const resUpdate = await dbAxios.patch(`/articles?id=eq.${encodeURIComponent(testId)}`, {
+        title: updatedTitle,
+        summary: updatedSummary
+      })
+      if (Array.isArray(resUpdate.data) && resUpdate.data.length > 0) {
+        addDiagLog('success', '2. TEST UPDATE (Supabase)', `✅ UPDATE สำเร็จ! แก้ไขชื่อบทความ ID="${testId}" เป็น "${updatedTitle}"`, resUpdate.data[0])
+      } else {
+        addDiagLog(
+          'error',
+          '2. TEST UPDATE (Supabase)',
+          `❌ UPDATE ไม่สำเร็จ! (HTTP ${resUpdate.status} แต่อัปเดตได้ 0 แถว) เพราะติด RLS Policy FOR UPDATE หรือไม่พบ ID="${testId}"`,
+          {
+            sqlFix: `CREATE POLICY "Allow Public Update Articles" ON public.articles FOR UPDATE USING (true) WITH CHECK (true);`
+          }
+        )
+      }
+    } catch (err) {
+      addDiagLog('error', '2. TEST UPDATE (Supabase)', `❌ UPDATE ล้มเหลวเพราะ: ${err.response?.data?.message || err.message}`, err.response?.data || err.message)
+    }
+
+    try {
+      const resFastifyUpd = await axios.patch(`${FASTIFY_URL}/${encodeURIComponent(testId)}`, {
+        title: updatedTitle,
+        content: updatedSummary
+      })
+      addDiagLog('success', '2. TEST UPDATE (Fastify)', `✅ UPDATE บน Fastify (localhost:3000) สำเร็จ!`, resFastifyUpd.data)
+    } catch (err) {
+      addDiagLog('warn', '2. TEST UPDATE (Fastify)', `⚠️ UPDATE บน Fastify ไม่สำเร็จเพราะ: ${err.response?.data?.reason || err.response?.data?.message || err.message}`)
+    }
+
+    // =====================================================
+    // STEP 3: TEST DELETE
+    // =====================================================
+    try {
+      const resDelete = await dbAxios.delete(`/articles?id=eq.${encodeURIComponent(testId)}`)
+      if (Array.isArray(resDelete.data) && resDelete.data.length > 0) {
+        addDiagLog('success', '3. TEST DELETE (Supabase)', `✅ DELETE สำเร็จ! ลบบทความ ID="${testId}" ออกจาก Supabase จริง (${resDelete.data.length} แถว)`, resDelete.data[0])
+      } else {
+        addDiagLog(
+          'error',
+          '3. TEST DELETE (Supabase)',
+          `❌ DELETE ไม่สำเร็จ! Supabase คืนค่า HTTP ${resDelete.status} แต่ลบได้ 0 แถว (แถว ID="${testId}" ยังค้างอยู่ในฐานข้อมูล!). ` +
+          `สาเหตุ: ตาราง public.articles บน Supabase เปิด RLS ไว้ แต่ยังไม่ได้สร้าง Policy "FOR DELETE"`,
+          {
+            problem: 'Missing RLS Policy FOR DELETE on table public.articles',
+            verifyRemainingRowUrl: `${SUPABASE_URL}/rest/v1/articles?id=eq.${testId}`,
+            howToFixInSupabaseSqlEditor: `DROP POLICY IF EXISTS "Allow Public Delete Articles" ON public.articles;\nCREATE POLICY "Allow Public Delete Articles" ON public.articles FOR DELETE USING (true);`
+          }
+        )
+      }
+    } catch (err) {
+      addDiagLog('error', '3. TEST DELETE (Supabase)', `❌ DELETE ล้มเหลวเพราะ: ${err.response?.data?.message || err.message}`, err.response?.data || err.message)
+    }
+
+    try {
+      const resFastifyDel = await axios.delete(`${FASTIFY_URL}/${encodeURIComponent(testId)}`)
+      addDiagLog('success', '3. TEST DELETE (Fastify)', `✅ DELETE บน Fastify (localhost:3000) สำเร็จ!`, resFastifyDel.data)
+    } catch (err) {
+      addDiagLog('warn', '3. TEST DELETE (Fastify)', `⚠️ DELETE บน Fastify ไม่สำเร็จเพราะ: ${err.response?.data?.reason || err.response?.data?.message || err.message}`)
+    }
+
+    await fetchAllDatabaseArticles()
+    showToast('รันชุดทดสอบ Insert / Update / Delete เสร็จสิ้น! ดูผลลัพธ์ใน Console Log ด้านล่าง', 'info')
+  } finally {
+    console.groupEnd()
+    loading.value = false
   }
 }
 
@@ -326,18 +576,18 @@ onMounted(() => {
             <span class="text-caption text-slate-500">บทความทั้งหมดในระบบ: {{ articles.length }} รายการ</span>
           </div>
         </div>
-        <div class="d-flex align-center ga-2">
-          <!-- ปุ่มเทส Insert ด่วน 1 คลิก -->
+        <div class="d-flex flex-wrap align-center ga-2">
+          <!-- ปุ่มเทสครบวงจร Insert / Update / Delete + Console Log -->
           <v-btn
             color="#0284C7"
             variant="tonal"
             rounded="lg"
-            prepend-icon="mdi-database-plus"
+            prepend-icon="mdi-console"
             class="text-none font-weight-bold px-3 text-sky-800"
             :loading="loading"
-            @click="runTestInsert"
+            @click="runFullCrudTest"
           >
-            🧪 เทส Insert Database
+            🧪 เทส Insert / Update / Delete
           </v-btn>
 
           <v-btn
@@ -360,6 +610,65 @@ onMounted(() => {
           />
         </div>
       </div>
+
+      <!-- Diagnostic Console Log Panel -->
+      <v-card rounded="xl" elevation="0" class="mb-6 border-stone overflow-hidden" style="background: #0F172A; color: #F8FAFC">
+        <div class="px-4 py-3 d-flex align-center justify-space-between" style="border-bottom: 1px solid #1E293B">
+          <div class="d-flex align-center ga-2">
+            <v-icon icon="mdi-console-line" color="#38BDF8" size="20" />
+            <span class="text-subtitle-2 font-weight-bold text-white">
+              Console Log วินิจฉัยการทำงาน (Insert / Update / Delete)
+            </span>
+            <v-chip size="x-small" color="#334155" variant="flat" class="text-white">
+              {{ diagnosticLogs.length }} logs
+            </v-chip>
+          </div>
+          <div class="d-flex align-center ga-2">
+            <v-btn
+              size="x-small"
+              variant="text"
+              color="#94A3B8"
+              class="text-none"
+              @click="diagnosticLogs = []"
+            >
+              ล้าง Log
+            </v-btn>
+            <v-btn
+              size="x-small"
+              variant="tonal"
+              color="#38BDF8"
+              class="text-none"
+              @click="showLogPanel = !showLogPanel"
+            >
+              {{ showLogPanel ? 'ซ่อน' : 'แสดง' }}
+            </v-btn>
+          </div>
+        </div>
+
+        <div v-if="showLogPanel" class="pa-4" style="max-height: 280px; overflow-y: auto; font-family: monospace; font-size: 12.5px">
+          <div v-if="diagnosticLogs.length === 0" class="text-slate-400">
+            กดปุ่ม "🧪 เทส Insert / Update / Delete" หรือลองกดเพิ่ม/แก้ไข/ลบบทความ เพื่อดู Console Log วินิจฉัยแบบละเอียด...
+          </div>
+          <div
+            v-for="log in diagnosticLogs"
+            :key="log.id"
+            class="mb-2 pa-2 rounded-lg"
+            :style="{
+              background: log.level === 'error' ? 'rgba(225, 29, 72, 0.15)' : log.level === 'warn' ? 'rgba(245, 158, 11, 0.14)' : 'rgba(16, 185, 129, 0.12)',
+              borderLeft: log.level === 'error' ? '3px solid #F43F5E' : log.level === 'warn' ? '3px solid #F59E0B' : '3px solid #10B981'
+            }"
+          >
+            <div class="d-flex align-center ga-2 mb-1">
+              <span class="font-weight-bold" :style="{ color: log.level === 'error' ? '#FDA4AF' : log.level === 'warn' ? '#FCD34D' : '#6EE7B7' }">
+                [{{ log.action }}]
+              </span>
+              <span style="color: #94A3B8">{{ log.timestamp }}</span>
+            </div>
+            <div style="color: #F1F5F9; line-height: 1.5">{{ log.message }}</div>
+            <pre v-if="log.detail" class="mt-1 pa-2 rounded" style="background: rgba(2, 6, 23, 0.65); color: #CBD5E1; overflow-x: auto; font-size: 11.5px">{{ log.detail }}</pre>
+          </div>
+        </div>
+      </v-card>
 
       <!-- Search & Category Filters -->
       <v-card rounded="xl" elevation="0" class="pa-4 border-stone bg-white mb-6">
@@ -570,7 +879,7 @@ onMounted(() => {
       </v-dialog>
 
       <!-- Snackbar Toast Feedback -->
-      <v-snackbar v-model="snackbar" :color="snackbarColor" timeout="2500" rounded="lg">
+      <v-snackbar v-model="snackbar" :color="snackbarColor" timeout="3500" rounded="lg">
         {{ snackbarText }}
       </v-snackbar>
     </v-container>
@@ -598,4 +907,3 @@ onMounted(() => {
   overflow: hidden;
 }
 </style>
-'@ | Set-Content -Encoding UTF8 "src\views\ArticleCrudView.vue"

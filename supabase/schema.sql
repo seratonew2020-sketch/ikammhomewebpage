@@ -44,6 +44,25 @@ CREATE POLICY "Public read articles"
   FOR SELECT
   USING (TRUE);
 
+DROP POLICY IF EXISTS "Allow Public Insert Articles" ON public.articles;
+CREATE POLICY "Allow Public Insert Articles"
+  ON public.articles
+  FOR INSERT
+  WITH CHECK (TRUE);
+
+DROP POLICY IF EXISTS "Allow Public Update Articles" ON public.articles;
+CREATE POLICY "Allow Public Update Articles"
+  ON public.articles
+  FOR UPDATE
+  USING (TRUE)
+  WITH CHECK (TRUE);
+
+DROP POLICY IF EXISTS "Allow Public Delete Articles" ON public.articles;
+CREATE POLICY "Allow Public Delete Articles"
+  ON public.articles
+  FOR DELETE
+  USING (TRUE);
+
 DROP POLICY IF EXISTS "Public insert leads" ON public.leads;
 CREATE POLICY "Public insert leads"
   ON public.leads
