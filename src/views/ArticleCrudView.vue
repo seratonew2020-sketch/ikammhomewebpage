@@ -2,7 +2,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
-import { fetchIkammArticles } from '../services/articleService'
+import {
+  fetchIkammArticles,
+  fetchDriveFolderImages,
+  normalizeDriveImageUrl,
+  GOOGLE_DRIVE_IMAGES,
+  GOOGLE_DRIVE_FOLDER_URL,
+} from '../services/articleService'
 
 const router = useRouter()
 
@@ -94,6 +100,7 @@ async function fetchAllDatabaseArticles() {
     const res = await dbAxios.get('/articles', {
       params: {
         select: '*',
+        category_id: 'neq.__deleted__',
         order: 'created_at.desc',
       }
     })
@@ -104,7 +111,7 @@ async function fetchAllDatabaseArticles() {
         title: item.title,
         category: item.category_name || item.category || 'บิ้วอิน & ตกแต่งภายใน',
         summary: item.summary || (item.sections?.[0]?.body) || 'ไม่มีคำอธิบายสรุป',
-        image: item.image || 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80',
+        image: normalizeDriveImageUrl(item.image) || 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80',
         status: item.status || 'published',
         readTime: item.read_time || '4 นาที',
         updatedAt: item.created_at || new Date().toISOString()
@@ -197,6 +204,10 @@ async function handleSaveArticle() {
   formSubmitting.value = true
   const targetId = isEditing.value ? String(formData.value.id) : `art-${Date.now()}`
 
+  const nowIso = new Date().toISOString()
+  const resolvedImageUrl = normalizeDriveImageUrl(formData.value.image) || 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80'
+  formData.value.image = resolvedImageUrl
+
   const supabasePayload = {
     id: targetId,
     title: formData.value.title.trim(),
@@ -207,21 +218,23 @@ async function handleSaveArticle() {
       { heading: formData.value.title.trim(), body: formData.value.summary || '' }
     ],
     recommendations: [],
-    image: formData.value.image || 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80',
+    image: resolvedImageUrl,
     read_time: '3 นาที',
     hashtags: ['#บิ้วอิน', '#แต่งบ้าน', '#iKamm'],
-    is_fb_highlight: false
+    is_fb_highlight: false,
+    created_at: nowIso
   }
 
   try {
     if (isEditing.value) {
-      // ✏️ UPDATE (PATCH)
+      // ✏️ UPDATE (PATCH) พร้อมอัปเดต created_at ให้ขึ้นเป็นโพสต์ล่าสุดบนหน้าแรก
       const updatePatch = {
         title: formData.value.title.trim(),
         summary: formData.value.summary || '',
         category_name: formData.value.category || 'คอนโด & ประหยัดพื้นที่',
-        image: formData.value.image || supabasePayload.image,
-        sections: [{ heading: formData.value.title.trim(), body: formData.value.summary || '' }]
+        image: resolvedImageUrl,
+        sections: [{ heading: formData.value.title.trim(), body: formData.value.summary || '' }],
+        created_at: nowIso
       }
 
       let supabaseUpdated = false
@@ -372,18 +385,28 @@ async function handleDeleteArticle() {
         addDiagLog('success', 'DELETE (Supabase)', `ลบบทความ ID="${targetId}" ออกจาก Supabase สำเร็จ (${res.data.length} แถว)`, res.data[0])
       } else {
         addDiagLog(
-          'error',
-          'DELETE (Supabase)',
-          `Delete บน Supabase ไม่สำเร็จ! (HTTP ${res.status} แต่ลบจริงได้ 0 แถว — รีเฟรชแล้วข้อมูลจะกลับมา) ` +
-          `สาเหตุหลัก: ตาราง public.articles บน Supabase เปิดใช้งาน Row Level Security (RLS) อยู่ แต่ยังไม่มี Policy สำหรับ FOR DELETE!`,
+          'warn',
+          'DELETE (Supabase RLS Notice)',
+          `คำสั่ง Hard DELETE ถูกบล็อกโดย RLS (ยังไม่ได้เปิด Policy FOR DELETE บน Supabase) ➔ ระบบกำลังสลับไปลบด้วยวิธี Database Soft-Delete (PATCH category_id='__deleted__') แทนอัตโนมัติ...`,
           {
             targetId,
-            httpStatus: res.status,
-            deletedRows: res.data,
-            whyItFailed: 'Supabase PostgREST จะคืนค่า 200 OK พร้อม Array ว่าง [] เมื่อติด RLS Policy FOR DELETE ทำให้ลบไม่ได้จริง',
-            sqlFixToRunInSupabase: `DROP POLICY IF EXISTS "Allow Public Delete Articles" ON public.articles;\nCREATE POLICY "Allow Public Delete Articles" ON public.articles FOR DELETE USING (true);`
+            sqlForHardDelete: `CREATE POLICY "Allow Public Delete Articles" ON public.articles FOR DELETE USING (true);`
           }
         )
+        const resSoft = await dbAxios.patch(`/articles?id=eq.${encodeURIComponent(targetId)}`, {
+          category_id: '__deleted__'
+        })
+        if (Array.isArray(resSoft.data) && resSoft.data.length > 0) {
+          supabaseDeleted = true
+          addDiagLog(
+            'success',
+            'DELETE (Supabase Soft-Delete)',
+            `✅ ลบบทความ ID="${targetId}" บน Supabase สำเร็จผ่าน Soft-Delete (PATCH category_id='__deleted__') รีเฟรชแล้วข้อมูลจะไม่กลับมา!`,
+            resSoft.data[0]
+          )
+        } else {
+          addDiagLog('error', 'DELETE (Supabase)', `ลบไม่สำเร็จทั้ง Hard Delete และ Soft Delete (ไม่พบ ID="${targetId}" ใน Supabase)`)
+        }
       }
     } catch (errSupabase) {
       addDiagLog(
@@ -524,16 +547,19 @@ async function runFullCrudTest() {
         addDiagLog('success', '3. TEST DELETE (Supabase)', `✅ DELETE สำเร็จ! ลบบทความ ID="${testId}" ออกจาก Supabase จริง (${resDelete.data.length} แถว)`, resDelete.data[0])
       } else {
         addDiagLog(
-          'error',
-          '3. TEST DELETE (Supabase)',
-          `❌ DELETE ไม่สำเร็จ! Supabase คืนค่า HTTP ${resDelete.status} แต่ลบได้ 0 แถว (แถว ID="${testId}" ยังค้างอยู่ในฐานข้อมูล!). ` +
-          `สาเหตุ: ตาราง public.articles บน Supabase เปิด RLS ไว้ แต่ยังไม่ได้สร้าง Policy "FOR DELETE"`,
+          'warn',
+          '3. TEST DELETE (Supabase RLS)',
+          `⚠️ Hard DELETE คืนค่า 0 แถวเพราะตาราง public.articles ยังไม่มี Policy "FOR DELETE" ➔ ระบบใช้ Soft-Delete (PATCH category_id='__deleted__') แทนอัตโนมัติ`,
           {
-            problem: 'Missing RLS Policy FOR DELETE on table public.articles',
-            verifyRemainingRowUrl: `${SUPABASE_URL}/rest/v1/articles?id=eq.${testId}`,
-            howToFixInSupabaseSqlEditor: `DROP POLICY IF EXISTS "Allow Public Delete Articles" ON public.articles;\nCREATE POLICY "Allow Public Delete Articles" ON public.articles FOR DELETE USING (true);`
+            howToEnableHardDeleteInSupabase: `CREATE POLICY "Allow Public Delete Articles" ON public.articles FOR DELETE USING (true);`
           }
         )
+        const resSoftDel = await dbAxios.patch(`/articles?id=eq.${encodeURIComponent(testId)}`, {
+          category_id: '__deleted__'
+        })
+        if (Array.isArray(resSoftDel.data) && resSoftDel.data.length > 0) {
+          addDiagLog('success', '3. TEST DELETE (Supabase Soft-Delete)', `✅ DELETE สำเร็จผ่าน Soft-Delete บน Supabase! แถว ID="${testId}" ถูกซ่อนถาวรแล้ว`, resSoftDel.data[0])
+        }
       }
     } catch (err) {
       addDiagLog('error', '3. TEST DELETE (Supabase)', `❌ DELETE ล้มเหลวเพราะ: ${err.response?.data?.message || err.message}`, err.response?.data || err.message)
@@ -554,8 +580,44 @@ async function runFullCrudTest() {
   }
 }
 
+// Google Drive Folder Sync State (รองรับการแชร์ยกโฟลเดอร์)
+const driveFolderUrlInput = ref(GOOGLE_DRIVE_FOLDER_URL)
+const driveFolderFiles = ref([...GOOGLE_DRIVE_IMAGES])
+const syncingDriveFolder = ref(false)
+
+async function syncDriveFolder() {
+  syncingDriveFolder.value = true
+  try {
+    const res = await fetchDriveFolderImages(driveFolderUrlInput.value)
+    if (res && Array.isArray(res.files) && res.files.length > 0) {
+      driveFolderFiles.value = res.files
+      addDiagLog('success', 'GOOGLE_DRIVE_FOLDER', `ดึงรูปทั้งหมดจากโฟลเดอร์ Google Drive สำเร็จ (${res.files.length} ไฟล์)`, res.files)
+      showToast(`ดึงรูปจากโฟลเดอร์ Google Drive สำเร็จ (${res.files.length} รูป) 📁`, 'success')
+    }
+  } catch (err) {
+    addDiagLog('error', 'GOOGLE_DRIVE_FOLDER', `ดึงโฟลเดอร์ Google Drive ไม่สำเร็จ: ${err.message}`)
+  } finally {
+    syncingDriveFolder.value = false
+  }
+}
+
+function createArticleFromDriveImage(driveFile) {
+  const cleanTitle = (driveFile.name || '').replace(/\.[^/.]+$/, '')
+  isEditing.value = false
+  formData.value = {
+    id: `art-${Date.now()}`,
+    title: cleanTitle || 'บทความใหม่จาก Google Drive',
+    category: 'คอนโด & ประหยัดพื้นที่',
+    summary: `รายละเอียดผลงานและไอเดียบิ้วอิน: ${cleanTitle}`,
+    image: driveFile.directUrl,
+    status: 'published',
+  }
+  dialogOpen.value = true
+}
+
 onMounted(() => {
   fetchAllDatabaseArticles()
+  syncDriveFolder()
 })
 </script>
 
@@ -828,12 +890,47 @@ onMounted(() => {
 
           <v-text-field
             v-model="formData.image"
-            label="ลิงก์รูปภาพหน้าปก (Image URL)"
+            label="ลิงก์รูปภาพหน้าปก (รองรับลิงก์แชร์ Google Drive ทุกรูปแบบ)"
+            placeholder="วางลิงก์ https://drive.google.com/file/d/... หรือ URL รูปภาพ"
             variant="outlined"
             density="comfortable"
             rounded="lg"
-            class="mb-4"
+            class="mb-2"
+            @blur="formData.image = normalizeDriveImageUrl(formData.image)"
           />
+
+          <!-- Quick Select from Google Drive Folder -->
+          <div class="mb-4 pa-3 rounded-lg bg-stone-50 border-stone">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-caption font-weight-bold text-slate-700">
+                📁 เลือกรูปจาก Google Drive (โฟลเดอร์ ikammhomeimgweb):
+              </span>
+              <a :href="GOOGLE_DRIVE_FOLDER_URL" target="_blank" rel="noopener noreferrer" class="text-caption font-weight-bold text-sky-700">
+                เปิดโฟลเดอร์ Drive ↗
+              </a>
+            </div>
+            <div class="d-flex flex-wrap ga-2">
+              <v-chip
+                v-for="dImg in driveFolderFiles"
+                :key="dImg.id"
+                size="small"
+                color="#0284C7"
+                variant="tonal"
+                class="cursor-pointer font-weight-bold"
+                prepend-icon="mdi-google-drive"
+                @click="formData.image = dImg.directUrl"
+              >
+                {{ dImg.name }}
+              </v-chip>
+            </div>
+            <v-img
+              v-if="formData.image"
+              :src="normalizeDriveImageUrl(formData.image)"
+              height="140"
+              cover
+              class="rounded-lg mt-3 border-stone bg-stone-100"
+            />
+          </div>
 
           <div class="d-flex justify-end ga-2">
             <v-btn variant="outlined" rounded="lg" color="#64748B" @click="dialogOpen = false">

@@ -9,7 +9,15 @@ import {
   getLocalizedIkammArticles,
   getIkammArticleSvg,
 } from '../data/ikammArticlesData'
-import { fetchIkammArticles, submitCustomerLead } from '../services/articleService'
+import {
+  fetchIkammArticles,
+  fetchDriveFolderImages,
+  fetchArticleViewCounts,
+  incrementArticleViewCount,
+  GOOGLE_DRIVE_IMAGES,
+  GOOGLE_DRIVE_FOLDER_URL,
+  submitCustomerLead,
+} from '../services/articleService'
 
 Chart.register(...registerables)
 
@@ -62,6 +70,25 @@ const dbSyncSource = ref('local')
 const dbArticleCount = ref(0)
 const isSyncingDb = ref(false)
 
+// --- Google Drive Shared Folder Gallery (ดึงรูปทั้งโฟลเดอร์อัตโนมัติ) ---
+const driveFolderFiles = ref([...GOOGLE_DRIVE_IMAGES])
+const isSyncingDrive = ref(false)
+
+async function syncDriveFolderGallery(showNotification = false) {
+  isSyncingDrive.value = true
+  try {
+    const res = await fetchDriveFolderImages(GOOGLE_DRIVE_FOLDER_URL)
+    if (res && Array.isArray(res.files) && res.files.length > 0) {
+      driveFolderFiles.value = res.files
+      if (showNotification) {
+        triggerToast(`ซิงค์รูปภาพจากโฟลเดอร์ Google Drive สำเร็จ (${res.files.length} รูป)`)
+      }
+    }
+  } finally {
+    isSyncingDrive.value = false
+  }
+}
+
 async function syncArticlesFromDb(lang = currentLang.value, showToast = false) {
   isSyncingDb.value = true
   try {
@@ -88,22 +115,52 @@ async function syncArticlesFromDb(lang = currentLang.value, showToast = false) {
 const localizedArticles = computed(() => {
   const ikamm = remoteIkammArticles.value || getLocalizedIkammArticles(currentLang.value)
   const dict = t.value.articles || {}
-  const construction = CONSTRUCTION_ARTICLES.map((base, idx) => {
-    const loc = dict[base.id] || {}
-    return {
-      ...base,
-      ...loc,
-      id: base.id,
-      day: 31 + idx,
-      dayLabel: `Guide ${idx + 1}`,
-      pillar: loc.category || base.category,
-      image: base.image || null,
-      svgType: base.svgType || null,
-      isConstruction: true,
+  const constructionById = new Map(
+    CONSTRUCTION_ARTICLES.map((base, idx) => {
+      const loc = dict[base.id] || {}
+      return [
+        base.id,
+        {
+          ...base,
+          ...loc,
+          id: base.id,
+          day: 31 + idx,
+          dayLabel: `Guide ${idx + 1}`,
+          pillar: loc.category || base.category,
+          image: base.image || null,
+          svgType: base.svgType || null,
+          isConstruction: true,
+        },
+      ]
+    })
+  )
+
+  const merged = ikamm.map((item) => {
+    const cMatch = constructionById.get(item.id)
+    if (cMatch) {
+      return {
+        ...cMatch,
+        ...item,
+        title: item.title || cMatch.title,
+        summary: item.summary || cMatch.summary,
+        category: item.category || cMatch.category,
+        image: item.image || cMatch.image,
+        svgType: item.svgType || cMatch.svgType,
+        isConstruction: true,
+      }
     }
+    return item
   })
-  return [...ikamm, ...construction]
+
+  const existingIds = new Set(merged.map((a) => a.id))
+  const remainingConstruction = Array.from(constructionById.values()).filter(
+    (c) => !existingIds.has(c.id)
+  )
+
+  return [...merged, ...remainingConstruction]
 })
+
+const latestPosts = computed(() => localizedArticles.value.slice(0, 3))
 
 const articleCategories = computed(() => {
   const ikammCats = IKAMM_CATEGORIES[currentLang.value] || IKAMM_CATEGORIES.th
@@ -248,6 +305,36 @@ function resetFilters() {
   articlePage.value = 1
 }
 
+// --- Article View Counter (นับจำนวนคลิกดูบทความ + ซิงค์ Supabase & LocalStorage) ---
+const articleViews = ref({})
+
+async function loadArticleViews() {
+  const counts = await fetchArticleViewCounts()
+  if (counts && typeof counts === 'object') {
+    articleViews.value = counts
+  }
+}
+
+function getArticleViews(articleId) {
+  if (!articleId) return 0
+  return Number(articleViews.value[articleId] || 0)
+}
+
+function formatArticleViews(articleId) {
+  const count = getArticleViews(articleId)
+  if (currentLang.value === 'en') {
+    return `${count.toLocaleString()} ${count === 1 ? 'view' : 'views'}`
+  }
+  if (currentLang.value === 'zh') {
+    return `${count.toLocaleString()} 次阅读`
+  }
+  return `ดู ${count.toLocaleString()} ครั้ง`
+}
+
+const totalArticleViews = computed(() => {
+  return Object.values(articleViews.value).reduce((sum, val) => sum + Number(val || 0), 0)
+})
+
 // --- Bookmarks (Saved Articles) ---
 const savedIds = ref([])
 
@@ -277,6 +364,8 @@ onMounted(() => {
     measuredZones.value = tx.value.measure.defaultZones.map((z) => ({ ...z }))
   }
   syncArticlesFromDb(currentLang.value)
+  syncDriveFolderGallery()
+  loadArticleViews()
 })
 
 // --- Customer Lead / Quote Inquiry Form (Supabase `leads`) ---
@@ -415,6 +504,16 @@ const currentArticle = computed(() => {
 })
 
 function openArticle(id) {
+  if (id) {
+    const nextCount = getArticleViews(id) + 1
+    articleViews.value = {
+      ...articleViews.value,
+      [id]: nextCount,
+    }
+    incrementArticleViewCount(id, articleViews.value).then((synced) => {
+      if (synced) articleViews.value = synced
+    })
+  }
   currentArticleId.value = id
   dialogOpen.value = true
 }
@@ -1076,6 +1175,92 @@ function triggerToast(msg) {
           </v-row>
         </v-card>
 
+        <!-- Latest Posts Highlight Section (โพสต์ล่าสุด) -->
+        <v-card v-if="latestPosts.length > 0" rounded="xl" elevation="0" class="pa-4 pa-sm-5 border-stone bg-white mb-6">
+          <div class="d-flex flex-wrap align-center justify-space-between ga-2 mb-4">
+            <div class="d-flex align-center ga-2 flex-wrap">
+              <v-chip size="small" color="#E11D48" variant="flat" class="text-white font-weight-bold px-3">
+                🔥 โพสต์ล่าสุด
+              </v-chip>
+              <h2 class="text-subtitle-1 text-sm-h6 font-weight-bold text-slate-900">
+                อัปเดตบทความและโพสต์ใหม่ล่าสุด
+              </h2>
+              <v-chip size="x-small" color="#FEF3C7" variant="flat" class="text-amber-900 font-weight-bold px-2.5" prepend-icon="mdi-eye-outline">
+                ยอดเข้าชมรวม {{ totalArticleViews.toLocaleString() }} ครั้ง
+              </v-chip>
+            </div>
+            <div class="d-flex align-center ga-2">
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="#D97706"
+                rounded="lg"
+                prepend-icon="mdi-refresh"
+                class="text-none font-weight-bold"
+                :loading="isSyncingDb"
+                @click="syncArticlesFromDb(currentLang, true)"
+              >
+                อัปเดตโพสต์ล่าสุด
+              </v-btn>
+            </div>
+          </div>
+
+          <v-row dense>
+            <v-col
+              v-for="(post, idx) in latestPosts"
+              :key="`latest-${post.id}`"
+              cols="12"
+              md="4"
+              class="d-flex"
+            >
+              <v-card
+                rounded="lg"
+                elevation="0"
+                class="pa-3 border-stone bg-stone-50 w-100 d-flex flex-column justify-space-between cursor-pointer article-card"
+                @click="openArticle(post.id)"
+              >
+                <div>
+                  <v-img
+                    v-if="post.image"
+                    :src="post.image"
+                    :alt="post.title"
+                    height="150"
+                    cover
+                    class="rounded-lg mb-3 bg-stone-100"
+                  />
+                  <div class="d-flex align-center justify-space-between ga-2 mb-2">
+                    <v-chip
+                      size="x-small"
+                      :color="idx === 0 ? '#E11D48' : '#0284C7'"
+                      variant="flat"
+                      class="text-white font-weight-bold"
+                    >
+                      {{ idx === 0 ? '✨ ใหม่ล่าสุด #1' : `โพสต์ล่าสุด #${idx + 1}` }}
+                    </v-chip>
+                    <span class="text-caption text-slate-400">{{ post.date || 'วันนี้' }}</span>
+                  </div>
+                  <div class="text-body-2 font-weight-bold text-slate-900 line-clamp-2 mb-1">
+                    {{ post.title }}
+                  </div>
+                  <div class="text-caption text-slate-600 line-clamp-2">
+                    {{ post.summary }}
+                  </div>
+                </div>
+                <div class="d-flex align-center justify-space-between mt-3 pt-2 border-t-stone">
+                  <span class="text-caption font-weight-medium text-amber-800 text-truncate">{{ post.category }}</span>
+                  <div class="d-flex align-center ga-2 flex-shrink-0">
+                    <span class="d-inline-flex align-center ga-1 text-caption font-weight-bold text-slate-600">
+                      <v-icon icon="mdi-eye-outline" size="14" color="#0284C7" />
+                      {{ formatArticleViews(post.id) }}
+                    </span>
+                    <span class="text-caption font-weight-bold text-amber-700">คลิกอ่าน ➔</span>
+                  </div>
+                </div>
+              </v-card>
+            </v-col>
+          </v-row>
+        </v-card>
+
         <!-- Search & Category Filter Bar -->
         <v-card rounded="xl" elevation="0" class="pa-4 pa-sm-5 border-stone bg-white mb-8">
           <div class="d-flex flex-column flex-sm-row align-sm-center justify-space-between ga-3 mb-4">
@@ -1234,7 +1419,14 @@ function triggerToast(msg) {
                   <!-- Card Body -->
                   <v-card-text class="pa-5 flex-grow-1 d-flex flex-column">
                     <div class="d-flex align-center justify-space-between text-caption text-slate-400 mb-2">
-                      <span>{{ article.readTime }}</span>
+                      <div class="d-flex align-center ga-2">
+                        <span>{{ article.readTime }}</span>
+                        <span>•</span>
+                        <span class="d-inline-flex align-center ga-1 font-weight-bold text-sky-700">
+                          <v-icon icon="mdi-eye-outline" size="14" color="#0284C7" />
+                          {{ formatArticleViews(article.id) }}
+                        </span>
+                      </div>
                       <span>{{ article.date }}</span>
                     </div>
                     <h3
@@ -1341,6 +1533,11 @@ function triggerToast(msg) {
                   </v-chip>
                   <span>•</span>
                   <span>{{ article.readTime }}</span>
+                  <span>•</span>
+                  <span class="d-inline-flex align-center ga-1 font-weight-bold text-sky-700">
+                    <v-icon icon="mdi-eye-outline" size="14" color="#0284C7" />
+                    {{ formatArticleViews(article.id) }}
+                  </span>
                 </v-list-item-subtitle>
 
                 <template #append>
@@ -2562,7 +2759,14 @@ function triggerToast(msg) {
 
               <v-card-text class="pa-5 flex-grow-1 d-flex flex-column">
                 <div class="d-flex align-center justify-space-between text-caption text-slate-400 mb-2">
-                  <span>{{ article.readTime }}</span>
+                  <div class="d-flex align-center ga-2">
+                    <span>{{ article.readTime }}</span>
+                    <span>•</span>
+                    <span class="d-inline-flex align-center ga-1 font-weight-bold text-sky-700">
+                      <v-icon icon="mdi-eye-outline" size="14" color="#0284C7" />
+                      {{ formatArticleViews(article.id) }}
+                    </span>
+                  </div>
                   <span>{{ article.date }}</span>
                 </div>
                 <h3
@@ -2728,10 +2932,14 @@ function triggerToast(msg) {
 
           <!-- Modal Content Body -->
           <div class="pa-6 pa-sm-8">
-            <div class="d-flex align-center ga-2 text-caption text-slate-500 mb-2">
+            <div class="d-flex flex-wrap align-center ga-2 text-caption text-slate-500 mb-2">
               <span>{{ currentArticle.readTime }}</span>
               <span>•</span>
               <span>{{ currentArticle.date }}</span>
+              <span>•</span>
+              <v-chip size="x-small" color="#E0F2FE" variant="flat" class="font-weight-bold text-sky-800 px-2" prepend-icon="mdi-eye-outline">
+                {{ formatArticleViews(currentArticle.id) }}
+              </v-chip>
             </div>
             <h2 class="text-h5 text-sm-h4 font-weight-bold text-slate-900 leading-snug mb-6">
               {{ currentArticle.title }}

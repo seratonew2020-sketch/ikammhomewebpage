@@ -1239,7 +1239,7 @@ export const IKAMM_ARTICLES = [
     id: 'ikamm-day-13',
     day: 13,
     categoryId: 'kitchen-bar',
-    image: '/images/articles/balcony-lounge.jpg',
+    image: 'https://lh3.googleusercontent.com/d/1kvNOLBje8SSRw_FHopG8YMImFLh3UIBW=w1200',
     hashtags: ['#ikammhome', '#บิ้วอินกันน้ำ', '#เคาน์เตอร์ซักล้าง', '#วัสดุทนฝน', '#Plaswood'],
     th: {
       title: 'บิ้วอินทนชื้นสำหรับห้องซักล้างกึ่งเอาต์ดอร์ (Semi-Outdoor Laundry)',
@@ -1285,7 +1285,7 @@ export const IKAMM_ARTICLES = [
     id: 'ikamm-day-14',
     day: 14,
     categoryId: 'materials-commercial',
-    image: '/images/articles/studio-condo.jpg',
+    image: 'https://lh3.googleusercontent.com/d/1yB_I9rjN2NjY14xuX23QEnDI_d6JxD-X=w1200',
     hashtags: ['#ikammhome', '#กั้นห้องกระจก', '#ประตูกระจกบานเลื่อน', '#SlimFrame', '#Architecture'],
     th: {
       title: 'ฉากกั้นห้องกระจกบานเฟี้ยม / บานเลื่อนสลิม (Slim Profile Glass Door)',

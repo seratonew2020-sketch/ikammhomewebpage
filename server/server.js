@@ -37,8 +37,77 @@ fastify.get('/api/rednote', rednoteHandler)
 fastify.get('/api/notes', rednoteHandler)
 
 // ==========================================
-// ส่วนที่ 2: ระบบ CRUD บทความ (/api/articles)
+// ส่วนที่ 1.5: ดึงรูปทั้งหมดจากโฟลเดอร์ Google Drive แบบอัตโนมัติ (ทั้งโฟลเดอร์)
 // ==========================================
+const DEFAULT_DRIVE_FOLDER_ID = '1L3gDZl97NrkXJ4Wl1tPgb35wf8LzM820'
+
+function extractDriveFolderId(input) {
+  if (!input) return DEFAULT_DRIVE_FOLDER_ID
+  const str = String(input).trim()
+  const match = str.match(/\/folders\/([a-zA-Z0-9_-]+)/)
+  if (match && match[1]) return match[1]
+  return str
+}
+
+async function listPublicDriveFolderFiles(folderInput) {
+  const folderId = extractDriveFolderId(folderInput)
+  const embedUrl = `https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(folderId)}#list`
+  const res = await fetch(embedUrl)
+  if (!res.ok) {
+    throw new Error(`Google Drive folder responded with HTTP ${res.status}`)
+  }
+  const html = await res.text()
+  const re = /id="entry-([a-zA-Z0-9_-]+)"[\s\S]*?<div class="flip-entry-title">([^<]+)<\/div>/g
+  const files = []
+  let m
+  while ((m = re.exec(html)) !== null) {
+    const fileId = m[1]
+    const fileName = m[2].trim()
+    files.push({
+      id: fileId,
+      name: fileName,
+      directUrl: `https://lh3.googleusercontent.com/d/${fileId}=w1200`,
+      thumbnailUrl: `https://drive.google.com/thumbnail?id=${fileId}&sz=w800`,
+      viewUrl: `https://drive.google.com/file/d/${fileId}/view?usp=sharing`
+    })
+  }
+  return {
+    folderId,
+    folderUrl: `https://drive.google.com/drive/folders/${folderId}`,
+    count: files.length,
+    files
+  }
+}
+
+fastify.get('/api/drive-folder', async (req, reply) => {
+  try {
+    const folderParam = req.query.folder || DEFAULT_DRIVE_FOLDER_ID
+    const result = await listPublicDriveFolderFiles(folderParam)
+    console.log(`[Fastify Drive Folder] ✅ ดึงรูปจากโฟลเดอร์ ${result.folderId} สำเร็จ (${result.count} ไฟล์)`)
+    return { success: true, ...result }
+  } catch (err) {
+    console.error('[Fastify Drive Folder] ❌ ดึงข้อมูลโฟลเดอร์ไม่สำเร็จ:', err.message)
+    return reply.code(500).send({ success: false, message: err.message })
+  }
+})
+
+fastify.get('/api/drive-folder/:folderId', async (req, reply) => {
+  try {
+    const result = await listPublicDriveFolderFiles(req.params.folderId)
+    console.log(`[Fastify Drive Folder] ✅ ดึงรูปจากโฟลเดอร์ ${result.folderId} สำเร็จ (${result.count} ไฟล์)`)
+    return { success: true, ...result }
+  } catch (err) {
+    console.error('[Fastify Drive Folder] ❌ ดึงข้อมูลโฟลเดอร์ไม่สำเร็จ:', err.message)
+    return reply.code(500).send({ success: false, message: err.message })
+  }
+})
+
+// ==========================================
+// ส่วนที่ 2: ระบบ CRUD บทความ (/api/articles) + ซิงค์ข้อมูลจาก Supabase อัตโนมัติ
+// ==========================================
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://pxlqylmlktavvptxonym.supabase.co'
+const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_VAEStEmaDCPyhwd6cAhYFQ_xV-7rgvK'
+
 let articles = [
   {
     id: 1,
@@ -56,6 +125,35 @@ let articles = [
   }
 ]
 let nextId = 3
+
+async function syncArticlesFromSupabase() {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/articles?select=*&category_id=neq.__deleted__&order=created_at.desc`, {
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`
+      }
+    })
+    if (res.ok) {
+      const rows = await res.json()
+      if (Array.isArray(rows) && rows.length > 0) {
+        articles = rows.map((item) => ({
+          id: String(item.id),
+          title: item.title,
+          category: item.category_name || 'บิ้วอิน & ตกแต่งภายใน',
+          content: item.summary || '',
+          summary: item.summary || '',
+          image: item.image || '',
+          status: 'published',
+          updatedAt: item.created_at || new Date().toISOString()
+        }))
+        console.log(`🔄 [Fastify Sync] ซิงค์บทความจาก Supabase เข้า Fastify Memory สำเร็จ (${articles.length} รายการ)`)
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️ [Fastify Sync] ซิงค์ข้อมูลเริ่มต้นจาก Supabase ไม่สำเร็จ ใช้ข้อมูลเริ่มต้นในเครื่องแทน:`, err.message)
+  }
+}
 
 // 1. READ ALL - ดึงบทความทั้งหมด
 fastify.get('/api/articles', async () => {
@@ -96,25 +194,34 @@ fastify.post('/api/articles', async (req, reply) => {
     status,
     updatedAt: new Date().toISOString()
   }
-  articles.unshift(newArticle)
+  const existingIdx = articles.findIndex((a) => String(a.id) === assignedId)
+  if (existingIdx !== -1) {
+    articles[existingIdx] = newArticle
+  } else {
+    articles.unshift(newArticle)
+  }
   console.log(`[Fastify INSERT /api/articles] ✅ Insert สำเร็จ! ID="${assignedId}", Title="${newArticle.title}"`)
   return reply.code(201).send({ success: true, data: newArticle })
 })
 
-// 4. UPDATE - แก้ไขบทความ (รองรับทั้ง PATCH และ PUT และรองรับ String ID)
+// 4. UPDATE - แก้ไขบทความ (รองรับทั้ง PATCH และ PUT และทำ Upsert อัตโนมัติถ้ายังไม่มี ID ใน Memory)
 const updateArticleHandler = async (req, reply) => {
   const targetId = String(req.params.id)
   const idx = articles.findIndex((a) => String(a.id) === targetId)
   if (idx === -1) {
-    console.error(
-      `[Fastify UPDATE /api/articles/${targetId}] ❌ Update ไม่สำเร็จ (404): ไม่พบ ID="${targetId}" ใน Fastify memory. ` +
-      `สาเหตุ: บทความนี้อาจถูกดึงมาจาก Supabase หรือ Mock data แต่ยังไม่ได้ถูก Insert เข้า Fastify memory (IDs ที่มีใน Fastify ตอนนี้: [${articles.map(a => a.id).join(', ')}])`
-    )
-    return reply.code(404).send({
-      success: false,
-      reason: `ID "${targetId}" not found in Fastify server memory`,
-      message: 'ไม่พบบทความที่ต้องการแก้ไขใน Fastify Server'
-    })
+    const upserted = {
+      id: targetId,
+      title: req.body?.title || `Article ${targetId}`,
+      category: req.body?.category || req.body?.category_name || 'คอนโด & ประหยัดพื้นที่',
+      content: req.body?.content || req.body?.summary || '',
+      summary: req.body?.summary || req.body?.content || '',
+      image: req.body?.image || '',
+      status: req.body?.status || 'published',
+      updatedAt: new Date().toISOString()
+    }
+    articles.unshift(upserted)
+    console.log(`[Fastify UPDATE /api/articles/${targetId}] ✅ Upsert บทความจาก Supabase เข้า Fastify Memory สำเร็จ! Title="${upserted.title}"`)
+    return { success: true, message: 'อัปเดตและซิงค์บทความสำเร็จ', data: upserted }
   }
   articles[idx] = {
     ...articles[idx],
@@ -128,20 +235,18 @@ const updateArticleHandler = async (req, reply) => {
 fastify.patch('/api/articles/:id', updateArticleHandler)
 fastify.put('/api/articles/:id', updateArticleHandler)
 
-// 5. DELETE - ลบบทความ (รองรับ String ID)
+// 5. DELETE - ลบบทความ (รองรับ String ID และไม่คืน 404 ถ้าถูกลบจาก Supabase)
 fastify.delete('/api/articles/:id', async (req, reply) => {
   const targetId = String(req.params.id)
   const idx = articles.findIndex((a) => String(a.id) === targetId)
   if (idx === -1) {
-    console.error(
-      `[Fastify DELETE /api/articles/${targetId}] ❌ Delete ไม่สำเร็จ (404): ไม่พบ ID="${targetId}" ใน Fastify memory. ` +
-      `สาเหตุ: บทความนี้อยู่บน Supabase หรือ Local Fallback ไม่ได้อยู่ใน Fastify memory (IDs ที่มีใน Fastify ตอนนี้: [${articles.map(a => a.id).join(', ')}])`
-    )
-    return reply.code(404).send({
-      success: false,
-      reason: `ID "${targetId}" not found in Fastify server memory`,
-      message: 'ไม่พบบทความที่ต้องการลบใน Fastify Server'
-    })
+    console.log(`[Fastify DELETE /api/articles/${targetId}] ℹ️ ซิงค์การลบบทความ ID="${targetId}" (ไม่อยู่ใน Fastify Memory หรือถูกลบไปแล้ว)`)
+    return {
+      success: true,
+      synced: true,
+      message: 'ซิงค์การลบบทความเรียบร้อย',
+      data: { id: targetId }
+    }
   }
   const deleted = articles.splice(idx, 1)
   console.log(`[Fastify DELETE /api/articles/${targetId}] ✅ Delete สำเร็จ! ลบบทความ ID="${targetId}" เรียบร้อย`)
@@ -151,6 +256,7 @@ fastify.delete('/api/articles/:id', async (req, reply) => {
 // เริ่มการทำงานของ Server พอร์ต 3000
 const start = async () => {
   try {
+    await syncArticlesFromSupabase()
     await fastify.listen({ port: 3000, host: '0.0.0.0' })
     console.log('🚀 Fastify Server is running on http://localhost:3000')
   } catch (err) {
