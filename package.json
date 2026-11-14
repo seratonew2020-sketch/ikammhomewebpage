@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "server": "node --watch server/server.js",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.8",
+    "nodemon": "^3.1.14",
     "sass": "^1.108.2",
     "vite": "^8.2.2",
     "vite-plugin-vue-devtools": "^8.2.1",

@@ -49,8 +49,6 @@ const mobileDrawer = ref(false)
 
 const navItems = computed(() => [
   { value: 'articles', label: t.value.nav.articles, icon: 'mdi-book-open-page-variant-outline' },
-  { value: 'compare', label: t.value.nav.compare, icon: 'mdi-scale-balance' },
-  { value: 'prices', label: tx.value.nav.prices, icon: 'mdi-tag-multiple-outline' },
   { value: 'calculator', label: t.value.nav.calculator, icon: 'mdi-calculator-variant-outline' },
   { value: 'measure', label: tx.value.nav.measure, icon: 'mdi-tape-measure' },
   { value: 'saved', label: t.value.nav.saved, icon: 'mdi-bookmark-outline', hasBadge: true },
@@ -1148,16 +1146,6 @@ function triggerToast(msg) {
                   {{ articleUiText.quickDirectoryBtn }}
                 </v-btn>
                 <v-btn
-                  color="#1E293B"
-                  variant="outlined"
-                  rounded="lg"
-                  class="text-none font-weight-medium px-5 text-slate-100 border-slate-700"
-                  size="large"
-                  @click="switchTab('compare')"
-                >
-                  {{ t.hero.compareBtn }}
-                </v-btn>
-                <v-btn
                   href="https://www.facebook.com/profile.php?id=100093160863461"
                   target="_blank"
                   rel="noopener noreferrer"
@@ -1592,141 +1580,6 @@ function triggerToast(msg) {
           >
             {{ t.search.resetBtn }}
           </v-btn>
-        </v-card>
-      </div>
-
-      <!-- VIEW 2: MATERIAL COMPARISON -->
-      <div v-else-if="activeTab === 'compare'" class="animate-fade-up">
-        <v-card rounded="xl" elevation="0" class="pa-6 border-stone bg-white">
-          <div class="d-flex flex-column flex-sm-row align-sm-center justify-space-between ga-4 mb-6">
-            <div>
-              <h2 class="text-h6 text-sm-h5 font-weight-bold text-slate-900">
-                {{ t.compare.heading }}
-              </h2>
-              <p class="text-body-2 text-slate-500 mt-1">
-                {{ t.compare.subheading }}
-              </p>
-            </div>
-            <div class="d-flex flex-wrap ga-2">
-              <v-btn
-                v-for="tab in [
-                  { key: 'bricks', label: t.compare.tabs.bricks },
-                  { key: 'roofing', label: t.compare.tabs.roofing },
-                  { key: 'cement', label: t.compare.tabs.cement },
-                ]"
-                :key="tab.key"
-                variant="flat"
-                rounded="lg"
-                size="small"
-                class="text-none font-weight-medium px-3.5 py-2"
-                :color="activeCompare === tab.key ? '#0F172A' : '#F5F5F4'"
-                :class="activeCompare === tab.key ? 'text-white' : 'text-slate-700'"
-                @click="activeCompare = tab.key"
-              >
-                {{ tab.label }}
-              </v-btn>
-            </div>
-          </div>
-
-          <!-- Comparison Cards -->
-          <v-row class="mb-6">
-            <v-col
-              v-for="card in currentCompareData.cards"
-              :key="card.name"
-              cols="12"
-              md="4"
-              class="d-flex"
-            >
-              <v-card
-                rounded="lg"
-                elevation="0"
-                class="border-stone bg-stone-50 pa-4 w-100 d-flex flex-column justify-space-between"
-              >
-                <div>
-                  <div class="d-flex align-start justify-space-between ga-2 mb-3">
-                    <h3 class="text-subtitle-1 font-weight-bold text-slate-900">
-                      {{ card.name }}
-                    </h3>
-                    <span
-                      class="px-2.5 py-0.5 rounded-pill text-caption font-weight-bold text-no-wrap"
-                      :style="{
-                        backgroundColor: getBadgeStyle(card.badgeColor).bg,
-                        color: getBadgeStyle(card.badgeColor).text,
-                        fontSize: '11px',
-                      }"
-                    >
-                      {{ card.badge }}
-                    </span>
-                  </div>
-
-                  <div class="mb-3">
-                    <div class="text-caption font-weight-bold text-emerald-700 mb-1">
-                      {{ t.compare.prosLabel }}
-                    </div>
-                    <ul class="text-caption text-slate-700 pl-4 space-y-1">
-                      <li v-for="pro in card.pros" :key="pro">{{ pro }}</li>
-                    </ul>
-                  </div>
-
-                  <div class="mb-3">
-                    <div class="text-caption font-weight-bold text-rose-700 mb-1">
-                      {{ t.compare.consLabel }}
-                    </div>
-                    <ul class="text-caption text-slate-700 pl-4 space-y-1">
-                      <li v-for="con in card.cons" :key="con">{{ con }}</li>
-                    </ul>
-                  </div>
-                </div>
-
-                <div class="pt-2 border-t-stone text-caption text-slate-600">
-                  <strong class="text-slate-800">{{ t.compare.bestForLabel }}</strong> {{ card.bestFor }}
-                </div>
-              </v-card>
-            </v-col>
-          </v-row>
-
-          <!-- Chart + Table Grid -->
-          <v-row align="start">
-            <v-col cols="12" lg="5">
-              <v-card rounded="lg" elevation="0" class="bg-stone-50 pa-4 border-stone">
-                <h3 class="text-body-2 font-weight-bold text-slate-800 mb-3">
-                  {{ currentCompareData.title }} {{ t.compare.scoreSuffix }}
-                </h3>
-                <div style="position: relative; height: 290px; width: 100%">
-                  <canvas ref="compareCanvas"></canvas>
-                </div>
-              </v-card>
-            </v-col>
-
-            <v-col cols="12" lg="7">
-              <v-card rounded="lg" elevation="0" class="border-stone overflow-hidden">
-                <v-table density="comfortable" class="text-body-2">
-                  <thead class="bg-stone-100">
-                    <tr>
-                      <th class="font-weight-bold text-slate-700 text-caption">
-                        {{ t.compare.tableTopicHeader }}
-                      </th>
-                      <th
-                        v-for="c in currentCompareData.cards"
-                        :key="c.name"
-                        class="font-weight-bold text-slate-700 text-caption"
-                      >
-                        {{ c.name }}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(row, idx) in currentCompareData.rows" :key="idx">
-                      <td class="font-weight-bold text-slate-800 py-3">{{ row[0] }}</td>
-                      <td class="text-slate-600 py-3">{{ row[1] }}</td>
-                      <td class="text-slate-600 py-3">{{ row[2] }}</td>
-                      <td class="text-slate-600 py-3">{{ row[3] }}</td>
-                    </tr>
-                  </tbody>
-                </v-table>
-              </v-card>
-            </v-col>
-          </v-row>
         </v-card>
       </div>
 
