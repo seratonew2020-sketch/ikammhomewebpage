@@ -958,6 +958,19 @@ function triggerToast(msg) {
           <v-divider vertical inset class="mx-1" />
 
           <v-btn
+            to="/crud"
+            size="small"
+            variant="tonal"
+            color="#0F172A"
+            rounded="lg"
+            prepend-icon="mdi-database-edit-outline"
+            class="text-none font-weight-bold px-2.5 mr-1"
+            title="จัดการคลังบทความ Database (CRUD)"
+          >
+            CRUD
+          </v-btn>
+
+          <v-btn
             href="https://www.facebook.com/profile.php?id=100093160863461"
             target="_blank"
             rel="noopener noreferrer"
@@ -1060,6 +1073,19 @@ function triggerToast(msg) {
               {{ savedIds.length }}
             </v-chip>
           </template>
+        </v-list-item>
+
+        <v-list-item
+          to="/crud"
+          rounded="lg"
+          @click="mobileDrawer = false"
+        >
+          <template #prepend>
+            <v-icon icon="mdi-database-edit-outline" size="20" class="mr-2" />
+          </template>
+          <v-list-item-title class="text-body-2 font-weight-bold">
+            🗄️ จัดการบทความ (CRUD)
+          </v-list-item-title>
         </v-list-item>
 
         <v-divider class="my-2" />

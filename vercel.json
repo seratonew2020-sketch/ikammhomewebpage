@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/articles/:id",
+      "destination": "/api/articles?id=:id"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/((?!api/|assets/|favicon\\.ico).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

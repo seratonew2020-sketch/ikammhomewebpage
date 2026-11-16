@@ -90,7 +90,9 @@ export async function fetchDriveFolderImages(folderInput = GOOGLE_DRIVE_FOLDER_I
   }
 
   try {
-    const res = await fetch(`http://localhost:3000/api/drive-folder?folder=${encodeURIComponent(folderId)}`)
+    const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    const apiBase = isLocal ? 'http://localhost:3000/api/drive-folder' : '/api/drive-folder'
+    const res = await fetch(`${apiBase}?folder=${encodeURIComponent(folderId)}`)
     if (res.ok) {
       const data = await res.json()
       if (data.success && Array.isArray(data.files) && data.files.length > 0) {

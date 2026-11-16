@@ -12,10 +12,12 @@ import {
 
 const router = useRouter()
 
-// --- Config Supabase REST API ผ่าน Axios ---
+// --- Config Supabase REST API & Production/Local API ผ่าน Axios ---
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://pxlqylmlktavvptxonym.supabase.co'
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_VAEStEmaDCPyhwd6cAhYFQ_xV-7rgvK'
-const FASTIFY_URL = 'http://localhost:3000/api/articles'
+const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+const FASTIFY_URL = isLocalhost ? 'http://localhost:3000/api/articles' : '/api/articles'
+const VERCEL_CRUD_URL = 'https://ikammhomewebpage.vercel.app/crud'
 
 const dbAxios = axios.create({
   baseURL: `${SUPABASE_URL}/rest/v1`,
@@ -631,11 +633,23 @@ onMounted(() => {
             <v-btn icon="mdi-arrow-left" variant="text" size="small" @click="router.push('/')" />
             <h1 class="text-h5 font-weight-bold text-slate-900">🗄️ จัดการคลังบทความ Database (CRUD)</h1>
           </div>
-          <div class="d-flex align-center ga-2 pl-8">
+          <div class="d-flex flex-wrap align-center ga-2 pl-8">
             <v-chip size="x-small" color="#10B981" variant="flat" class="text-white font-weight-bold">
               🟢 {{ dbStatus.source }}
             </v-chip>
             <span class="text-caption text-slate-500">บทความทั้งหมดในระบบ: {{ articles.length }} รายการ</span>
+            <v-chip
+              :href="VERCEL_CRUD_URL"
+              target="_blank"
+              rel="noopener noreferrer"
+              size="x-small"
+              color="#0F172A"
+              variant="tonal"
+              prepend-icon="mdi-open-in-new"
+              class="font-weight-bold cursor-pointer"
+            >
+              ikammhomewebpage.vercel.app/crud
+            </v-chip>
           </div>
         </div>
         <div class="d-flex flex-wrap align-center ga-2">
