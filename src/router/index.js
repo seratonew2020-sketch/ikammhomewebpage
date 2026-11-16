@@ -24,11 +24,5 @@ const router = createRouter({
   ],
 })
 
-// รองรับการเข้าผ่าน https://ikammhomewebpage.vercel.app/?crud=1 หรือ /#/crud
-router.beforeEach((to) => {
-  if (to.path === '/' && (to.query.crud !== undefined || to.query.page === 'crud' || to.hash === '#/crud' || to.hash === '#crud')) {
-    return { path: '/crud' }
-  }
-})
 
 export default router

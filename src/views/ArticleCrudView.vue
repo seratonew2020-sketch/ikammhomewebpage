@@ -177,17 +177,21 @@ const paginatedArticles = computed(() => {
 })
 
 // --- 2. CREATE & 3. UPDATE (สร้างและแก้ไข) ---
-function openCreateDialog() {
+async function openCreateDialog() {
   isEditing.value = false
+  const latestDriveImg = driveFolderFiles.value?.[0]?.directUrl || 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80'
   formData.value = {
     id: `art-${Date.now()}`,
     title: '',
     category: 'คอนโด & ประหยัดพื้นที่',
     summary: '',
-    image: 'https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=800&q=80',
+    image: latestDriveImg,
     status: 'published',
   }
   dialogOpen.value = true
+
+  // ดึงรูปล่าสุดจาก Google Drive อัตโนมัติทุกครั้งที่เปิดหน้าต่างสร้างบทความใหม่
+  await syncDriveFolder(true)
 }
 
 function openEditDialog(article) {
@@ -582,19 +586,31 @@ async function runFullCrudTest() {
   }
 }
 
-// Google Drive Folder Sync State (รองรับการแชร์ยกโฟลเดอร์)
+// Google Drive Folder Sync State (รองรับการแชร์ยกโฟลเดอร์ + เรียงรูปล่าสุดขึ้นก่อนเสมอ)
 const driveFolderUrlInput = ref(GOOGLE_DRIVE_FOLDER_URL)
 const driveFolderFiles = ref([...GOOGLE_DRIVE_IMAGES])
 const syncingDriveFolder = ref(false)
 
-async function syncDriveFolder() {
+const driveDropdownItems = computed(() =>
+  driveFolderFiles.value.map((dImg, idx) => ({
+    ...dImg,
+    index: idx,
+    isLatest: idx === 0,
+    displayLabel: idx === 0 ? `🆕 [รูปล่าสุด] ${dImg.name}` : `${idx + 1}. ${dImg.name}`,
+  }))
+)
+
+async function syncDriveFolder(selectLatestIfCreating = false) {
   syncingDriveFolder.value = true
   try {
     const res = await fetchDriveFolderImages(driveFolderUrlInput.value)
     if (res && Array.isArray(res.files) && res.files.length > 0) {
       driveFolderFiles.value = res.files
-      addDiagLog('success', 'GOOGLE_DRIVE_FOLDER', `ดึงรูปทั้งหมดจากโฟลเดอร์ Google Drive สำเร็จ (${res.files.length} ไฟล์)`, res.files)
-      showToast(`ดึงรูปจากโฟลเดอร์ Google Drive สำเร็จ (${res.files.length} รูป) 📁`, 'success')
+      if (selectLatestIfCreating && !isEditing.value && res.files[0]?.directUrl) {
+        formData.value.image = res.files[0].directUrl
+      }
+      addDiagLog('success', 'GOOGLE_DRIVE_FOLDER', `ดึงรูปทั้งหมดจากโฟลเดอร์ Google Drive สำเร็จ (${res.files.length} ไฟล์ — รูปล่าสุด: ${res.files[0]?.name})`, res.files)
+      showToast(`ดึงรูปล่าสุดจาก Google Drive สำเร็จ (${res.files.length} รูป) 📁`, 'success')
     }
   } catch (err) {
     addDiagLog('error', 'GOOGLE_DRIVE_FOLDER', `ดึงโฟลเดอร์ Google Drive ไม่สำเร็จ: ${err.message}`)
@@ -913,34 +929,84 @@ onMounted(() => {
             @blur="formData.image = normalizeDriveImageUrl(formData.image)"
           />
 
-          <!-- Quick Select from Google Drive Folder -->
+          <!-- Quick Select from Google Drive Folder (Dropdown รองรับรูปจำนวนมาก + รูปล่าสุดขึ้นก่อนเสมอ) -->
           <div class="mb-4 pa-3 rounded-lg bg-stone-50 border-stone">
-            <div class="d-flex align-center justify-space-between mb-2">
-              <span class="text-caption font-weight-bold text-slate-700">
-                📁 เลือกรูปจาก Google Drive (โฟลเดอร์ ikammhomeimgweb):
-              </span>
-              <a :href="GOOGLE_DRIVE_FOLDER_URL" target="_blank" rel="noopener noreferrer" class="text-caption font-weight-bold text-sky-700">
-                เปิดโฟลเดอร์ Drive ↗
-              </a>
+            <div class="d-flex flex-wrap align-center justify-space-between ga-2 mb-2">
+              <div class="d-flex align-center ga-1.5">
+                <span class="text-caption font-weight-bold text-slate-700">
+                  📁 เลือกรูปจาก Google Drive ({{ driveFolderFiles.length }} รูป — เรียงรูปล่าสุดขึ้นก่อน):
+                </span>
+              </div>
+              <div class="d-flex align-center ga-2">
+                <v-btn
+                  size="x-small"
+                  variant="tonal"
+                  color="#0284C7"
+                  rounded="md"
+                  prepend-icon="mdi-refresh"
+                  class="text-none font-weight-bold"
+                  :loading="syncingDriveFolder"
+                  @click="syncDriveFolder(true)"
+                >
+                  ดึงรูปล่าสุด
+                </v-btn>
+                <a :href="GOOGLE_DRIVE_FOLDER_URL" target="_blank" rel="noopener noreferrer" class="text-caption font-weight-bold text-sky-700">
+                  เปิดโฟลเดอร์ Drive ↗
+                </a>
+              </div>
             </div>
-            <div class="d-flex flex-wrap ga-2">
-              <v-chip
-                v-for="dImg in driveFolderFiles"
-                :key="dImg.id"
-                size="small"
-                color="#0284C7"
-                variant="tonal"
-                class="cursor-pointer font-weight-bold"
-                prepend-icon="mdi-google-drive"
-                @click="formData.image = dImg.directUrl"
-              >
-                {{ dImg.name }}
-              </v-chip>
-            </div>
+
+            <v-autocomplete
+              v-model="formData.image"
+              :items="driveDropdownItems"
+              item-title="displayLabel"
+              item-value="directUrl"
+              label="คลิกเลือกรูปภาพ หรือพิมพ์ค้นหาชื่อรูปจาก Google Drive"
+              placeholder="ค้นหาชื่อไฟล์รูปภาพ..."
+              prepend-inner-icon="mdi-google-drive"
+              variant="outlined"
+              density="comfortable"
+              rounded="lg"
+              bg-color="white"
+              hide-details
+              clearable
+              :loading="syncingDriveFolder"
+              :menu-props="{ maxHeight: 320 }"
+            >
+              <template #item="{ props: itemProps, item }">
+                <v-list-item
+                  v-bind="itemProps"
+                  :title="undefined"
+                  class="py-2"
+                >
+                  <template #prepend>
+                    <v-avatar rounded="lg" size="44" class="mr-3 border-stone bg-stone-100">
+                      <v-img :src="item.raw.thumbnailUrl || item.raw.directUrl" cover />
+                    </v-avatar>
+                  </template>
+                  <v-list-item-title class="text-body-2 font-weight-bold text-slate-900 d-flex align-center flex-wrap ga-1.5">
+                    <span>{{ item.raw.name }}</span>
+                    <v-chip
+                      v-if="item.raw.isLatest"
+                      size="x-small"
+                      color="#10B981"
+                      variant="flat"
+                      class="text-white font-weight-bold px-2"
+                    >
+                      🆕 ล่าสุด
+                    </v-chip>
+                  </v-list-item-title>
+                  <v-list-item-subtitle v-if="item.raw.lastModified" class="text-caption text-slate-500 mt-0.5">
+                    อัปเดตเมื่อ: {{ item.raw.lastModified }}
+                  </v-list-item-subtitle>
+                </v-list-item>
+              </template>
+            </v-autocomplete>
+
             <v-img
               v-if="formData.image"
               :src="normalizeDriveImageUrl(formData.image)"
-              height="140"
+              height="160"
               cover
               class="rounded-lg mt-3 border-stone bg-stone-100"
             />

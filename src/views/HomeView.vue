@@ -957,18 +957,7 @@ function triggerToast(msg) {
 
           <v-divider vertical inset class="mx-1" />
 
-          <v-btn
-            to="/crud"
-            size="small"
-            variant="tonal"
-            color="#0F172A"
-            rounded="lg"
-            prepend-icon="mdi-database-edit-outline"
-            class="text-none font-weight-bold px-2.5 mr-1"
-            title="จัดการคลังบทความ Database (CRUD)"
-          >
-            CRUD
-          </v-btn>
+  
 
           <v-btn
             href="https://www.facebook.com/profile.php?id=100093160863461"
